@@ -15,7 +15,7 @@ Homepage: https://github.com/wasta-linux/gnome-shell-extension-dash-to-panel
 Package: gnome-shell-extension-dash-to-panel
 Architecture: all
 Depends:
- gnome-shell (>= 3.33),
+# gnome-shell (>= 3.33),
  gnome-shell (<< 43~),
  ${shlibs:Depends},
  ${misc:Depends}
