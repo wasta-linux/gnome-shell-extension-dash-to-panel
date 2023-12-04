@@ -27,54 +27,56 @@
  * Some code was also adapted from the upstream Gnome Shell source code.
  */
 
-const Me = imports.misc.extensionUtils.getCurrentExtension();
-const { Overview } = Me.imports.overview;
-const { Panel, panelBoxes } = Me.imports.panel;
-const PanelSettings = Me.imports.panelSettings;
-const Proximity = Me.imports.proximity;
-const Taskbar = Me.imports.taskbar;
-const Utils = Me.imports.utils;
+import * as Overview from './overview.js';
+import * as Panel from './panel.js';
+import * as PanelSettings from './panelSettings.js';
+import * as Proximity from './proximity.js';
+import * as Utils from './utils.js';
+import * as DesktopIconsIntegration from './desktopIconsIntegration.js';
 
-const Gi = imports._gi;
-const GLib = imports.gi.GLib;
-const GObject = imports.gi.GObject;
-const Clutter = imports.gi.Clutter;
-const Meta = imports.gi.Meta;
-const Shell = imports.gi.Shell;
-const St = imports.gi.St;
+import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
+import Clutter from 'gi://Clutter';
+import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
+import St from 'gi://St';
 
-const AppDisplay = imports.ui.appDisplay;
-const BoxPointer = imports.ui.boxpointer;
-const Dash = imports.ui.dash;
-const IconGrid = imports.ui.iconGrid;
-const LookingGlass = imports.ui.lookingGlass;
-const Main = imports.ui.main;
-const PanelMenu = imports.ui.panelMenu;
-const Layout = imports.ui.layout;
-const WM = imports.ui.windowManager;
-const { SecondaryMonitorDisplay, WorkspacesView } = imports.ui.workspacesView;
+import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js';
+import * as LookingGlass from 'resource:///org/gnome/shell/ui/lookingGlass.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as Layout from 'resource:///org/gnome/shell/ui/layout.js';
+import {InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {SETTINGS} from './extension.js';
+import {SecondaryMonitorDisplay, WorkspacesView} from 'resource:///org/gnome/shell/ui/workspacesView.js';
 
-var PanelManager = class {
+
+export const PanelManager = class {
 
     constructor() {
-        this.overview = new Overview();
+        this.overview = new Overview.Overview();
         this.panelsElementPositions = {};
+        this._injectionManager = new InjectionManager();
 
         this._saveMonitors();
     }
 
     enable(reset) {
-        let dtpPrimaryIndex = Me.settings.get_int('primary-monitor');
+        let dtpPrimaryIndex = SETTINGS.get_int('primary-monitor');
 
+        this.allPanels = [];
         this.dtpPrimaryMonitor = Main.layoutManager.monitors[dtpPrimaryIndex] || Main.layoutManager.primaryMonitor;
         this.proximityManager = new Proximity.ProximityManager();
 
-        this.primaryPanel = this._createPanel(this.dtpPrimaryMonitor, Me.settings.get_boolean('stockgs-keep-top-panel'));
-        this.allPanels = [ this.primaryPanel ];
-        
-        this.overview.enable(this.primaryPanel);
+        if (this.dtpPrimaryMonitor) {
+            this.primaryPanel = this._createPanel(this.dtpPrimaryMonitor, SETTINGS.get_boolean('stockgs-keep-top-panel'));
+            this.allPanels.push(this.primaryPanel);
+            this.overview.enable(this.primaryPanel);
 
-        if (Me.settings.get_boolean('multi-monitors')) {
+            this.setFocusedMonitor(this.dtpPrimaryMonitor);
+        }
+
+        if (SETTINGS.get_boolean('multi-monitors')) {
             Main.layoutManager.monitors.filter(m => m != this.dtpPrimaryMonitor).forEach(m => {
                 this.allPanels.push(this._createPanel(m, true));
             });
@@ -97,11 +99,12 @@ var PanelManager = class {
             p.taskbar.iconAnimator.start();
         });
 
+        this._setDesktopIconsMargins();
         //in 3.32, BoxPointer now inherits St.Widget
         if (BoxPointer.BoxPointer.prototype.vfunc_get_preferred_height) {
             let panelManager = this;
 
-            Utils.hookVfunc(BoxPointer.BoxPointer.prototype, 'get_preferred_height', function(forWidth) {
+            this._injectionManager.overrideMethod(BoxPointer.BoxPointer.prototype, 'vfunc_get_preferred_height', () => function(forWidth) {
                 let alloc = { min_size: 0, natural_size: 0 };
                 
                 [alloc.min_size, alloc.natural_size] = this.vfunc_get_preferred_height(forWidth);
@@ -111,9 +114,10 @@ var PanelManager = class {
         }
 
         this._updatePanelElementPositions();
-        this.setFocusedMonitor(this.dtpPrimaryMonitor);
         
         if (reset) return;
+
+        this._desktopIconsUsableArea = new DesktopIconsIntegration.DesktopIconsUsableAreaClass();
 
         this._oldUpdatePanelBarrier = Main.layoutManager._updatePanelBarrier;
         Main.layoutManager._updatePanelBarrier = (panel) => {
@@ -127,7 +131,7 @@ var PanelManager = class {
         Main.layoutManager._updateHotCorners = newUpdateHotCorners.bind(Main.layoutManager);
         Main.layoutManager._updateHotCorners();
 
-        this._forceHotCornerId = Me.settings.connect('changed::stockgs-force-hotcorner', () => Main.layoutManager._updateHotCorners());
+        this._forceHotCornerId = SETTINGS.connect('changed::stockgs-force-hotcorner', () => Main.layoutManager._updateHotCorners());
 
         if (Main.layoutManager._interfaceSettings) {
             this._enableHotCornersId = Main.layoutManager._interfaceSettings.connect('changed::enable-hot-corners', () => Main.layoutManager._updateHotCorners());
@@ -135,6 +139,9 @@ var PanelManager = class {
 
         this._oldUpdateWorkspacesViews = Main.overview._overview._controls._workspacesDisplay._updateWorkspacesViews;
         Main.overview._overview._controls._workspacesDisplay._updateWorkspacesViews = this._newUpdateWorkspacesViews.bind(Main.overview._overview._controls._workspacesDisplay);
+
+        this._oldSetPrimaryWorkspaceVisible = Main.overview._overview._controls._workspacesDisplay.setPrimaryWorkspaceVisible
+        Main.overview._overview._controls._workspacesDisplay.setPrimaryWorkspaceVisible = this._newSetPrimaryWorkspaceVisible.bind(Main.overview._overview._controls._workspacesDisplay);
 
         LookingGlass.LookingGlass.prototype._oldResize = LookingGlass.LookingGlass.prototype._resize;
         LookingGlass.LookingGlass.prototype._resize = _newLookingGlassResize;
@@ -147,7 +154,7 @@ var PanelManager = class {
         //listen settings
         this._signalsHandler.add(
             [
-                Me.settings,
+                SETTINGS,
                 [
                     'changed::primary-monitor',
                     'changed::multi-monitors',
@@ -160,40 +167,56 @@ var PanelManager = class {
                 () => this._reset()
             ],
             [
-                Me.settings,
+                SETTINGS,
                 'changed::panel-element-positions',
                 () => this._updatePanelElementPositions()
             ],
             [
-                Me.settings,
+                SETTINGS,
                 'changed::intellihide-key-toggle-text',
                 () => this._setKeyBindings(true)
+            ],
+            [
+                SETTINGS,
+                'changed::panel-sizes',
+                () => {
+                    GLib.idle_add(GLib.PRIORITY_LOW, () => {
+                        this._setDesktopIconsMargins();
+                        return GLib.SOURCE_REMOVE;
+                    });
+                }
             ],
             [
                 Utils.DisplayWrapper.getMonitorManager(),
                 'monitors-changed', 
                 () => {
                     if (Main.layoutManager.primaryMonitor) {
-                        this._saveMonitors(true);
+                        this._saveMonitors();
                         this._reset();
                     }
                 }
             ]
         );
 
-        panelBoxes.forEach(c => this._signalsHandler.add(
-            [Main.panel[c], 'actor-added', (parent, child) => this._adjustPanelMenuButton(this._getPanelMenuButton(child), this.primaryPanel.monitor, this.primaryPanel.getPosition())]
+        Panel.panelBoxes.forEach(c => this._signalsHandler.add(
+            [
+                Main.panel[c], 
+                'actor-added', 
+                (parent, child) => 
+                    this.primaryPanel && 
+                    this._adjustPanelMenuButton(this._getPanelMenuButton(child), this.primaryPanel.monitor, this.primaryPanel.getPosition())
+            ]
         ));
 
         this._setKeyBindings(true);
 
         // keep GS overview.js from blowing away custom panel styles
-        if(!Me.settings.get_boolean('stockgs-keep-top-panel'))
+        if(!SETTINGS.get_boolean('stockgs-keep-top-panel'))
             Object.defineProperty(Main.panel, "style", {configurable: true, set(v) {}});
     }
 
     disable(reset) {
-        this.overview.disable();
+        this.primaryPanel && this.overview.disable();
         this.proximityManager.destroy();
 
         this.allPanels.forEach(p => {
@@ -232,9 +255,7 @@ var PanelManager = class {
             }
         });
 
-        if (BoxPointer.BoxPointer.prototype.vfunc_get_preferred_height) {
-            Utils.hookVfunc(BoxPointer.BoxPointer.prototype, 'get_preferred_height', BoxPointer.BoxPointer.prototype.vfunc_get_preferred_height);
-        }
+        this._injectionManager.clear();
 
         if (Main.layoutManager.primaryMonitor) {
             Main.layoutManager.panelBox.set_position(Main.layoutManager.primaryMonitor.x, Main.layoutManager.primaryMonitor.y);
@@ -250,7 +271,7 @@ var PanelManager = class {
         Main.layoutManager._updateHotCorners = this._oldUpdateHotCorners;
         Main.layoutManager._updateHotCorners();
 
-        Me.settings.disconnect(this._forceHotCornerId);
+        SETTINGS.disconnect(this._forceHotCornerId);
 
         if (this._enableHotCornersId) {
             Main.layoutManager._interfaceSettings.disconnect(this._enableHotCornersId);
@@ -260,6 +281,7 @@ var PanelManager = class {
         Main.layoutManager._updatePanelBarrier();
 
         Main.overview._overview._controls._workspacesDisplay._updateWorkspacesViews = this._oldUpdateWorkspacesViews;
+        Main.overview._overview._controls._workspacesDisplay.setPrimaryWorkspaceVisible = this._oldSetPrimaryWorkspaceVisible;
 
         LookingGlass.LookingGlass.prototype._resize = LookingGlass.LookingGlass.prototype._oldResize;
         delete LookingGlass.LookingGlass.prototype._oldResize;
@@ -268,6 +290,28 @@ var PanelManager = class {
         delete LookingGlass.LookingGlass.prototype._oldOpen
 
         delete Main.panel.style;
+        this._desktopIconsUsableArea.destroy();
+        this._desktopIconsUsableArea = null;
+    }
+
+    _setDesktopIconsMargins() {
+        this._desktopIconsUsableArea?.resetMargins();
+        this.allPanels.forEach(p => {
+            switch(p.geom.position) {
+                case St.Side.TOP:
+                    this._desktopIconsUsableArea?.setMargins(p.monitor.index, p.geom.h, 0, 0, 0);
+                    break;
+                case St.Side.BOTTOM:
+                    this._desktopIconsUsableArea?.setMargins(p.monitor.index, 0, p.geom.h, 0, 0);
+                    break;
+                case St.Side.LEFT:
+                    this._desktopIconsUsableArea?.setMargins(p.monitor.index, 0, 0, p.geom.w, 0);
+                    break;
+                case St.Side.RIGHT:
+                    this._desktopIconsUsableArea?.setMargins(p.monitor.index, 0, 0, 0, p.geom.w);
+                    break;
+            }
+        });
     }
 
     setFocusedMonitor(monitor) {
@@ -279,6 +323,18 @@ var PanelManager = class {
 
             Main.overview._overview._controls._workspacesDisplay._primaryIndex = monitor.index;
         }
+    }
+
+    _newSetPrimaryWorkspaceVisible(visible) {
+        if (this._primaryVisible === visible)
+            return;
+
+        this._primaryVisible = visible;
+
+        const primaryIndex = Main.overview._overview._controls._workspacesDisplay._primaryIndex;
+        const primaryWorkspace = this._workspacesViews[primaryIndex];
+        if (primaryWorkspace)
+            primaryWorkspace.visible = visible;
     }
 
     _newUpdateWorkspacesViews() {
@@ -300,8 +356,9 @@ var PanelManager = class {
                 this.bind_property('opacity', view, 'opacity', GObject.BindingFlags.SYNC_CREATE);
                 this.add_child(view);
             } else {
-                // todo exorcise this after the GS 42 release
-                view = new ProxySecondaryMonitorDisplay(i,
+                // No idea why atm, but we need the import at the top of this file and to use the
+                // full imports ns here, otherwise SecondaryMonitorDisplay can't be used ¯\_(ツ)_/¯
+                view = new SecondaryMonitorDisplay(i,
                     this._controls,
                     this._scrollAdjustment,
                     this._fitModeAdjustment,
@@ -313,36 +370,32 @@ var PanelManager = class {
         }
     }
 
-    _saveMonitors(savePrimaryChange) {
+    _saveMonitors() {
         //Mutter meta_monitor_manager_get_primary_monitor (global.display.get_primary_monitor()) doesn't return the same
         //monitor as GDK gdk_screen_get_primary_monitor (imports.gi.Gdk.Screen.get_default().get_primary_monitor()).
         //Since the Mutter function is what's used in gnome-shell and we can't access it from the settings dialog, store 
         //the monitors information in a setting so we can use the same monitor indexes as the ones in gnome-shell
         let keyMonitors = 'available-monitors';
+        let keyPrimary = 'primary-monitor';
         let primaryIndex = Main.layoutManager.primaryIndex;
         let newMonitors = [primaryIndex];
+        let savedMonitors = SETTINGS.get_value(keyMonitors).deep_unpack();
+        let dtpPrimaryIndex = SETTINGS.get_int(keyPrimary);
+        let newDtpPrimaryIndex = primaryIndex;
 
         Main.layoutManager.monitors.filter(m => m.index != primaryIndex).forEach(m => newMonitors.push(m.index));
-        
-        if (savePrimaryChange) {
-            let keyPrimary = 'primary-monitor';
-            let savedMonitors = Me.settings.get_value(keyMonitors).deep_unpack();
-            let dtpPrimaryIndex = Me.settings.get_int(keyPrimary);
-            let newDtpPrimaryIndex = primaryIndex;
 
-            if (savedMonitors[0] != dtpPrimaryIndex) {
-                // dash to panel primary wasn't the gnome-shell primary (first index of available-monitors)
-                let savedIndex = savedMonitors.indexOf(dtpPrimaryIndex)
+        if (savedMonitors[0] != dtpPrimaryIndex) {
+            // dash to panel primary wasn't the gnome-shell primary (first index of available-monitors)
+            let savedIndex = savedMonitors.indexOf(dtpPrimaryIndex)
 
-                // default to primary if it was set to a monitor that is no longer available
-                newDtpPrimaryIndex = newMonitors[savedIndex];
-                newDtpPrimaryIndex = newDtpPrimaryIndex == null ? primaryIndex : newDtpPrimaryIndex;
-            }
-            
-            Me.settings.set_int(keyPrimary, newDtpPrimaryIndex);
+            // default to primary if it was set to a monitor that is no longer available
+            newDtpPrimaryIndex = newMonitors[savedIndex];
+            newDtpPrimaryIndex = newDtpPrimaryIndex == null ? primaryIndex : newDtpPrimaryIndex;
         }
-
-        Me.settings.set_value(keyMonitors, new GLib.Variant('ai', newMonitors));
+        
+        SETTINGS.set_int(keyPrimary, newDtpPrimaryIndex);
+        SETTINGS.set_value(keyMonitors, new GLib.Variant('ai', newMonitors));
     }
 
     checkIfFocusedMonitor(monitor) {
@@ -367,7 +420,7 @@ var PanelManager = class {
         clipContainer.add_child(panelBox);
         Main.layoutManager.trackChrome(panelBox, { trackFullscreen: true, affectsStruts: true, affectsInputRegion: true });
         
-        panel = new Panel(this, monitor, panelBox, isStandalone);
+        panel = new Panel.Panel(this, monitor, panelBox, isStandalone);
         panelBox.add(panel);
         panel.enable();
 
@@ -387,7 +440,7 @@ var PanelManager = class {
     }
 
     _updatePanelElementPositions() {
-        this.panelsElementPositions = PanelSettings.getSettingsJson(Me.settings, 'panel-element-positions');
+        this.panelsElementPositions = PanelSettings.getSettingsJson(SETTINGS, 'panel-element-positions');
         this.allPanels.forEach(p => p.updateElementPositions());
     }
 
@@ -407,7 +460,7 @@ var PanelManager = class {
     }
 
     _getBoxPointerPreferredHeight(boxPointer, alloc, monitor) {
-        if (boxPointer._dtpInPanel && boxPointer.sourceActor && Me.settings.get_boolean('intellihide')) {
+        if (boxPointer._dtpInPanel && boxPointer.sourceActor && SETTINGS.get_boolean('intellihide')) {
             monitor = monitor || Main.layoutManager.findMonitorForActor(boxPointer.sourceActor);
             let panel = Utils.find(global.dashToPanel.panels, p => p.monitor == monitor);
             let excess = alloc.natural_size + panel.dtpSize + 10 - monitor.height; // 10 is arbitrary
@@ -449,7 +502,7 @@ var PanelManager = class {
     }
 
     _getPanelMenuButton(obj) {
-        return obj._delegate && obj._delegate instanceof PanelMenu.Button ? obj._delegate : 0;
+        return obj instanceof PanelMenu.Button && obj.menu?._boxPointer ? obj : 0;
     }
 
     _setKeyBindings(enable) {
@@ -461,25 +514,16 @@ var PanelManager = class {
             Utils.removeKeybinding(k);
 
             if (enable) {
-                Utils.addKeybinding(k, Me.settings, keys[k], Shell.ActionMode.NORMAL);
+                Utils.addKeybinding(k, SETTINGS, keys[k], Shell.ActionMode.NORMAL);
             }
         });
     }
 
 };
 
-// No idea why atm, but we need the import at the top of this file and this
-// "proxy" class, otherwise SecondaryMonitorDisplay can't be used ¯\_(ツ)_/¯
-var ProxySecondaryMonitorDisplay = GObject.registerClass({
-}, class ProxySecondaryMonitorDisplay extends imports.ui.workspacesView.SecondaryMonitorDisplay {
-    _init(...params) {
-        super._init(...params)
-    }
-});
-
 // This class drives long-running icon animations, to keep them running in sync
 // with each other.
-var IconAnimator = class {
+export const IconAnimator = class {
 
     constructor(actor) {
         this._count = 0;
@@ -590,7 +634,7 @@ function newUpdateHotCorners() {
         // hot corner unless it is actually a top left panel. Otherwise, it stops the mouse 
         // as you are dragging across. In the future, maybe we will automatically move the 
         // hotcorner to the bottom when the panel is positioned at the bottom
-        if (i != this.primaryIndex || (!panelTopLeft && !Me.settings.get_boolean('stockgs-force-hotcorner'))) {
+        if (i != this.primaryIndex || (!panelTopLeft && !SETTINGS.get_boolean('stockgs-force-hotcorner'))) {
             // Check if we have a top left (right for RTL) corner.
             // I.e. if there is no monitor directly above or to the left(right)
             let besideX = this._rtl ? monitor.x + 1 : cornerX - 1;
@@ -657,8 +701,8 @@ function newUpdatePanelBarrier(panel) {
     let fixed2 = panel.monitor.y + barrierSize;
     
     if (panel.checkIfVertical()) {
-        barriers._rightPanelBarrier.push(panel.monitor.y + panel.monitor.height, Meta.BarrierDirection.POSITIVE_Y);
-        barriers._leftPanelBarrier.push(panel.monitor.y, Meta.BarrierDirection.NEGATIVE_Y);
+        barriers._rightPanelBarrier.push(panel.monitor.y + panel.monitor.height, Meta.BarrierDirection.NEGATIVE_Y);
+        barriers._leftPanelBarrier.push(panel.monitor.y, Meta.BarrierDirection.POSITIVE_Y);
     } else {
         barriers._rightPanelBarrier.push(panel.monitor.x + panel.monitor.width, Meta.BarrierDirection.NEGATIVE_X);
         barriers._leftPanelBarrier.push(panel.monitor.x, Meta.BarrierDirection.POSITIVE_X);
@@ -671,12 +715,12 @@ function newUpdatePanelBarrier(panel) {
             fixed2 = panel.monitor.y + panel.monitor.height;
             break;
         case St.Side.LEFT:
-            fixed1 = panel.monitor.x;
-            fixed2 = panel.monitor.x + barrierSize;
+            fixed1 = panel.monitor.x + barrierSize;
+            fixed2 = panel.monitor.x;
             break;
         case St.Side.RIGHT:
-            fixed1 = panel.monitor.x + panel.monitor.width;
-            fixed2 = panel.monitor.x + panel.monitor.width - barrierSize;
+            fixed1 = panel.monitor.x + panel.monitor.width - barrierSize;
+            fixed2 = panel.monitor.x + panel.monitor.width;
             break;
     }
 

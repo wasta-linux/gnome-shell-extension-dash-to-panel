@@ -5,9 +5,7 @@ Maintainer: Nate Marti <nate_marti@sil.org>
 Build-Depends:
  debhelper-compat (= 13),
  dh-sequence-gnome,
-# jq,
  libglib2.0-bin,
-# meson,
 Standards-Version: 4.5.0
 Rules-Requires-Root: no
 Homepage: https://github.com/wasta-linux/gnome-shell-extension-dash-to-panel
@@ -15,8 +13,7 @@ Homepage: https://github.com/wasta-linux/gnome-shell-extension-dash-to-panel
 Package: gnome-shell-extension-dash-to-panel
 Architecture: all
 Depends:
-# gnome-shell (>= 3.33),
- gnome-shell (<< 43~),
+ gnome-shell (>= 45~),
  ${shlibs:Depends},
  ${misc:Depends}
 Suggests:

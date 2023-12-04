@@ -1,11 +1,5 @@
-gnome-shell-extension-dash-to-panel (43.0.1) jammy; urgency=medium
+gnome-shell-extension-dash-to-panel (45) noble; urgency=medium
 
-  * Remove breaking dependency for earlier gnome-shell version.
+  * Initial release
 
- -- Nate Marti <nate_marti@sil.org>  Tue, 26 Apr 2022 18:10:53 +0100
-
-gnome-shell-extension-dash-to-panel (43) jammy; urgency=medium
-
-  * Initial release.
-
- -- Nate Marti <nate_marti@sil.org>  Wed, 20 Apr 2022 21:16:18 +0100
+ -- Nate Marti <nate_marti@sil.org>  Mon, 04 Dec 2023 07:25:23 +0100
