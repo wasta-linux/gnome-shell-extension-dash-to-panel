@@ -1,3 +1,9 @@
+gnome-shell-extension-dash-to-panel (55) noble; urgency=medium
+
+  * Version bump b/c of gnome-shell dependency.
+
+ -- Nate Marti <nate_marti@sil.org>  Mon, 04 Dec 2023 16:25:13 +0100
+
 gnome-shell-extension-dash-to-panel (45) noble; urgency=medium
 
   * Initial release
